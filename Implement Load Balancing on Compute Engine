@@ -1,0 +1,69 @@
+export REGION=<Change to your specific parameter>
+export ZONE=<Change to your specific parameter>
+export FIREWALL_RULE_NAME=<Change to your specific parameter>
+
+gcloud compute instances create nucleus-jumphost-164 --machine-type e2-micro --zone=$ZONE
+
+# Second Lab
+RUN THE SCRIPT ON GOOGLE CLOUD SHELL
+cat << EOF > startup.sh
+#! /bin/bash
+ apt-get update
+ apt-get install -y nginx
+ service nginx start
+ sed -i -- 's/nginx/Google Cloud Platform - '"\$HOSTNAME"'/' /var/www/html/index.nginx-debian.html
+EOF
+
+#Create an instance template:
+gcloud compute instance-templates create nucleus-template \
+     --region=$REGION \
+     --machine-type=e2-medium \
+     --image-family=debian-11 \
+     --image-project=debian-cloud \
+     --metadata-from-file startup-script=startup.sh
+
+#Create a managed instance group based on the template:
+gcloud compute instance-groups managed create nucleus-group \
+         --base-instance-name=nucleus-webserver \
+         --size=2 \
+         --template=nucleus-template \
+         --target-pool=nucleus-pool \
+         --zone=$ZONE
+
+#Create target pool for the instance group:
+gcloud compute target-pools create nucleus-pool --region=$REGION
+
+
+#Create a firewall rule named as Firewall rule to allow traffic (80/tcp):
+gcloud compute firewall-rules create ${FIREWALL_RULE_NAME} --action=allow --rules=tcp:80
+
+#Create a health check:
+gcloud compute http-health-checks create http-basic-check
+
+gcloud compute instance-groups managed \
+       set-named-ports=nucleus-group \
+       --named-ports=http:80 \
+       --zone=$ZONE
+
+#Create a backend service and add your instance group as the backend to the backend service group with named port (http:80):
+gcloud compute backend-services create nucleus-backend \
+      --protocol HTTP --http-health-checks http-basic-check --global
+
+gcloud compute backend-services add-backend nucleus-backend \
+    --instance-group=nucleus-group \
+    --instance-group-zone=$ZONE \
+    --global
+
+#Create a URL map, and target the HTTP proxy to route the incoming requests to the default backend service:
+gcloud compute url-maps create web-map \
+    --default-service nucleus-backend
+
+#Create a target HTTP proxy to route requests to your URL map:
+gcloud compute target-http-proxies create http-lb-proxy \
+    --url-map web-map
+
+#Create a forwarding rule:
+gcloud compute forwarding-rules create http-content-rule \
+        --global \
+        --target-http-proxy=http-lb-proxy \
+        --ports=80
